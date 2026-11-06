@@ -102,6 +102,9 @@ label.f{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--mu
 .composer textarea{border:0;background:none;padding:8px 0;resize:none;max-height:180px;min-height:24px;border-radius:0}
 .dia{background:#fff;border-radius:14px;padding:8px;margin:10px 0;max-width:640px}.dia img{width:100%;height:auto;display:block}.dsave{display:inline-block;margin:4px 4px 0;font-size:13px;color:#555;text-decoration:underline}
 .ann{display:none}.ann.on{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;background:var(--s2);border-bottom:1px solid var(--line);font-size:14px;line-height:1.45}.ann span{flex:1;white-space:pre-wrap;overflow-wrap:anywhere}
+.ib.on{color:var(--acc);background:var(--s2)}
+.tg{display:grid;gap:12px}.tc{display:block;width:100%;text-align:left;background:var(--s2);border:1px solid var(--line);border-radius:16px;padding:16px}.tc:hover{border-color:#3a3a3a}.tc b{display:block;font-size:16px;margin-bottom:4px}.tc small{color:var(--mut);font-size:13.5px;line-height:1.4}
+.mtag{display:flex;align-items:center;gap:10px;margin:0 0 14px;font-size:13px;color:var(--mut)}.mtag span{background:var(--s2);border:1px solid var(--line);border-radius:999px;padding:4px 12px}
 .bub img{max-width:100%;max-height:260px;border-radius:12px;display:block;margin:0 0 6px}
 .cprev{max-width:760px;margin:0 auto 8px;display:none;position:relative;width:fit-content}
 .cprev.on{display:block}.cprev img{height:72px;border-radius:12px;display:block;border:1px solid var(--line)}
@@ -237,6 +240,12 @@ const FIREBASE_CONFIG={apiKey:'AIzaSyCmtleP8R7OjvmeNbgSs2_gRwzLxRPA5wI',authDoma
 // Admin panel: put your own Google email here (lowercase). Also put the same email in your Firestore rules.
 const ADMIN_EMAILS=['mr.myst888@gmail.com'];
 const FB_VER='10.12.2';
+// Push notifications: paste the Web Push key pair (public key) from Firebase, Project settings, Cloud Messaging.
+const VAPID_KEY='PUT_VAPID_KEY_HERE';
+// Backend functions (AI for everyone + push sending). Leave empty if the app itself is hosted on Netlify.
+const API_BASE='';
+const proxyOK=()=>!!API_BASE||!/github\.io$/.test(location.hostname);
+const API=(API_BASE||'')+'/.netlify/functions/';
 
 /* =====================================================================
    2. HELPERS
@@ -262,6 +271,7 @@ cal:'<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M8 3v4M16 3
 task:'<rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/>',
 timer:'<path d="M9 2.5h6M12 8v5l3 2"/><circle cx="12" cy="14" r="8"/>',
 plus:'<path d="M12 5v14M5 12h14"/>',
+mic:'<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
 img:'<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m4 18 5-5 4 4 3-3 4 4"/>',
 send:'<path d="M12 19V5M5 12l7-7 7 7"/>',
 menu:'<path d="M4 7h16M4 12h16M4 17h16"/>',
@@ -340,7 +350,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&modals.length)modal
    ===================================================================== */
 let user=null,S=null,fb=null,sync='local';
 const blank=()=>({v:2,name:'',chats:[],notes:[],classes:[],tasks:[],sessions:[],quiz:[],updated:0,
-  settings:{provider:'auto',geminiKey:'',geminiModel:'gemini-flash-latest',focus:25,brk:5}});
+  settings:{provider:'auto',geminiKey:'',geminiModel:'gemini-flash-latest',focus:25,brk:5,speak:null,voiceName:'',rate:1,pitch:1,micLang:'en-US',friend:'Nova',fstyle:'warm'}});
 function norm(o){const b=blank(),s=Object.assign(b,o||{});s.settings=Object.assign(blank().settings,(o||{}).settings);return s}
 const key=()=>'sh2.'+(user?user.uid:'guest');
 function load(){
@@ -385,6 +395,24 @@ async function loadCloud(){
   try{const a=await fb.fs.getDoc(fb.fs.doc(fb.db,'config','announcement'));ANN=a.exists()&&a.data().on&&a.data().text?{text:String(a.data().text),ts:a.data().ts||0}:null;ls.set('sh2.ann',JSON.stringify(ANN))}catch(e){}
   try{const q=await fb.fs.getDocs(fb.fs.collection(fb.db,'questions'));CQ=q.docs.map(d=>({id:d.id,...d.data()})).filter(validQ);ls.set('sh2.cq',JSON.stringify(CQ))}catch(e){}
   paintAnn();
+  if('Notification' in window&&Notification.permission==='granted'&&ls.get('sh2.push'))enablePush(true);
+}
+async function enablePush(silent){
+  const say=(m,t)=>{if(!silent)toast(m,t||4500)};
+  if(!('Notification' in window)||!('serviceWorker' in navigator)){say('This browser cannot show notifications. On iPhone, add the app to your Home Screen first.',5500);return}
+  if(!fb){say('Connect to the internet and try again.');return}
+  if(VAPID_KEY.indexOf('PUT_')===0){say('Notifications are not set up yet by the app owner.',5000);return}
+  try{
+    const perm=Notification.permission==='granted'?'granted':await Notification.requestPermission();
+    if(perm!=='granted'){say('Notifications are blocked. Allow them in your browser settings.',5500);return}
+    const mod=await import('https://www.gstatic.com/firebasejs/'+FB_VER+'/firebase-messaging.js');
+    const reg=await navigator.serviceWorker.ready;
+    const tok=await mod.getToken(mod.getMessaging(fb.app),{vapidKey:VAPID_KEY,serviceWorkerRegistration:reg});
+    if(!tok)throw new Error('no token');
+    await fb.fs.setDoc(fb.fs.doc(fb.db,'tokens',tok),{ts:Date.now()});
+    ls.set('sh2.push','1');
+    if(!silent){toast('Notifications are on.');render()}
+  }catch(e){say('Could not turn on notifications. Try again.')}
 }
 async function adminWrite(fn){
   if(!fb||!isAdmin()){toast('Sign in with the admin Google account first.');return}
@@ -399,6 +427,7 @@ function vAdmin(){
   <div class="card" style="margin-bottom:16px"><h2>Announcement</h2>
    <p class="mut" style="margin:0 0 10px;font-size:13px">${ANN&&ANN.text?'Live now: '+esc(ANN.text):'No announcement is live.'}</p>
    <textarea id="aann" rows="3" maxlength="300" placeholder="Write a message every user will see"></textarea>
+   <label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:14px"><input type="checkbox" id="apush" checked style="width:auto"> Also send a notification to users' phones</label>
    <div class="row" style="margin-top:10px"><button class="btn pri" data-a="adann">Publish</button><button class="btn" data-a="rmann">Remove</button></div></div>
   <div class="card" style="margin-bottom:16px"><h2>Add a question</h2>
    <div class="chips" style="margin-bottom:12px">${exL.map(e=>`<button class="chip ${ADM.x[e[0]]?'on':''}" data-a="adx" data-v="${e[0]}">${e[1]}</button>`).join('')}</div>
@@ -427,7 +456,7 @@ async function initFirebase(){
   const base='https://www.gstatic.com/firebasejs/'+FB_VER+'/';
   const [a,au,fs]=await Promise.all([import(base+'firebase-app.js'),import(base+'firebase-auth.js'),import(base+'firebase-firestore.js')]);
   const app=a.initializeApp(FIREBASE_CONFIG);
-  fb={au,fs,auth:au.getAuth(app),db:fs.getFirestore(app)};
+  fb={app,au,fs,auth:au.getAuth(app),db:fs.getFirestore(app)};
 }
 async function googleLogin(){
   if(!fb){toast('Google sign-in isn\'t set up yet. Add your Firebase config at the top of the script. Your data is saved on this device for now.',4000);return}
@@ -465,25 +494,29 @@ function turnsFrom(msgs){
   while(t.length&&t[0].role!=='user')t.shift();
   return t;
 }
-async function askAI(msgs,onText,signal){
-  const p=S.settings.provider,hasC=!!(window.claude&&window.claude.use),hasG=!!S.settings.geminiKey.trim();
+async function askAI(msgs,onText,signal,sysP){
+  const SYSX=sysP||SYS;
+  const p=S.settings.provider,hasC=!!(window.claude&&window.claude.use),hasG=!!S.settings.geminiKey.trim()||!!(user&&fb&&fb.auth&&fb.auth.currentUser&&proxyOK());
   const which=p==='auto'?(hasC?'claude':hasG?'gemini':null):p;
-  if(!which)throw{code:'noai'};
+  if(!which)throw{code:'nokey'};
   const turns=turnsFrom(msgs);
   if(which==='claude'){
     if(!hasC)throw{code:'noclaude'};
     const sample=await window.claude.use('sample');
     if(!sample)throw{code:'noclaude'};
-    const t=turns.map((x,i)=>i===0?{...x,content:SYS+'\n\nStudent:\n'+x.content}:x);
+    const t=turns.map((x,i)=>i===0?{...x,content:SYSX+'\n\nUser:\n'+x.content}:x);
     const r=await sample(t,{cache:false,signal,onText:({text})=>onText(text)});
     return r.text;
   }
   if(!hasG)throw{code:'nokey'};
   const chosen=(S.settings.geminiModel||'gemini-flash-latest').trim();
   const models=[chosen,'gemini-flash-lite-latest','gemini-2.5-flash','gemini-flash-latest','gemini-2.5-flash-lite'].filter((m,k,a)=>a.indexOf(m)===k);
-  const body=JSON.stringify({systemInstruction:{parts:[{text:SYS}]},contents:turns.map((x,k)=>{const parts=[{text:x.content}];const lm=msgs[msgs.length-1];if(k===turns.length-1&&x.role==='user'&&lm&&IM.get(lm)){parts.push({inlineData:{mimeType:'image/jpeg',data:IM.get(lm).full.split(',')[1]}})}return{role:x.role==='user'?'user':'model',parts}})});
+  const body=JSON.stringify({systemInstruction:{parts:[{text:SYSX}]},contents:turns.map((x,k)=>{const parts=[{text:x.content}];const lm=msgs[msgs.length-1];if(k===turns.length-1&&x.role==='user'&&lm&&IM.get(lm)){parts.push({inlineData:{mimeType:'image/jpeg',data:IM.get(lm).full.split(',')[1]}})}return{role:x.role==='user'?'user':'model',parts}})});
   let lastStatus=0;
   const key=S.settings.geminiKey.trim();
+  const viaProxy=!key;
+  let idTok='';
+  if(viaProxy){try{idTok=await fb.auth.currentUser.getIdToken()}catch(_){throw{code:'http',status:401}}}
   for(const m of models){
     for(let a=0;a<2;a++){
       if(signal&&signal.aborted)throw{name:'AbortError'};
@@ -492,7 +525,7 @@ async function askAI(msgs,onText,signal){
       if(signal)signal.addEventListener('abort',onAb);
       let timer=setTimeout(()=>ac.abort(),22000),out='',retry=false;
       try{
-        const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(m)+':streamGenerateContent?alt=sse',{method:'POST',signal:ac.signal,headers:{'Content-Type':'application/json','x-goog-api-key':key},body});
+        const r=viaProxy?await fetch(API+'ai',{method:'POST',signal:ac.signal,headers:{'Content-Type':'application/json','Authorization':'Bearer '+idTok},body:JSON.stringify({model:m,payload:JSON.parse(body)})}):await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(m)+':streamGenerateContent?alt=sse',{method:'POST',signal:ac.signal,headers:{'Content-Type':'application/json','x-goog-api-key':key},body});
         if(!r.ok){
           lastStatus=r.status;
           if(r.status===401||r.status===403||(r.status===400&&m===chosen))throw{code:'http',status:r.status};
@@ -526,11 +559,12 @@ async function askAI(msgs,onText,signal){
 function errText(e){
   const c=e&&e.code;
   if(c==='noai')return 'The AI assistant is not ready yet.\n\nOpen **Settings → AI assistant** and paste a free Gemini key from aistudio.google.com.';
-  if(c==='nokey')return 'Add your Gemini key in **Settings → AI assistant** first.';
+  if(c==='nokey')return 'Sign in with Google (free) in **Settings** to use the AI, or add your own Gemini key in **Settings → AI assistant**.';
   if(c==='noclaude')return 'The built-in AI is not available here. Add a Gemini key in **Settings → AI assistant**.';
   if(c==='http'){
     if(e.status===429)return 'The free AI limit was reached for now. Wait a minute and try again.';
-    if(e.status===400||e.status===403||e.status===401)return 'The AI key or model name was rejected. Check them in **Settings → AI assistant**.';
+    if(e.status===401)return 'Please sign in again to use the AI.';
+    if(e.status===400||e.status===403)return 'The AI key or model name was rejected. Check them in **Settings → AI assistant**.';
     return 'The AI service had a problem (error '+e.status+'). Try again in a moment.';
   }
   if(c==='empty')return 'The AI returned an empty answer. Try rephrasing your question.';
@@ -542,6 +576,7 @@ function errText(e){
    ===================================================================== */
 const MODS=[
  {id:'chat',label:'Chat',icon:'chat',render:vChat,mount:mChat,chat:true},
+ {id:'tools',label:'AI tools',icon:'spark',render:vTools},
  {id:'notes',label:'Notes',icon:'notes',render:vNotes,mount:mNotes,full:true},
  {id:'classes',label:'Timetable',icon:'cal',render:vClasses},
  {id:'tasks',label:'Assignments',icon:'task',render:vTasks,mount:mTasks},
@@ -591,7 +626,75 @@ function nextClass(){
   return S.classes.filter(c=>c.day===dow(now)&&toMin(c.end)>nm).sort((a,b)=>toMin(a.start)-toMin(b.start))[0];
 }
 function dueSoon(){const lim=Date.now()+48*36e5;return S.tasks.filter(t=>!t.done&&t.due&&+new Date(t.due)<=lim)}
+/* ---------- AI modes (writing, coding, translating, friend) ---------- */
+const BASEID="You are StudentHub's AI assistant, created by Wisdom of WisdomArk. Never mention any underlying AI model or company; if asked who made you, say you are StudentHub's assistant, built by Wisdom at WisdomArk. ";
+const FSTYLE={warm:'warm and gentle',playful:'playful and witty, teasing in a kind way',calm:'calm, patient and soothing',hype:'upbeat, energetic and encouraging'};
+const MODES={
+ study:{label:'Study',ph:'Ask anything about your studies'},
+ write:{label:'Writing and emails',ph:'What do you want to write?',title:'Writing and emails',sub:'CVs, cover letters, emails, captions and more.',chips:['Write a CV for a fresh graduate','Draft a polite email to my lecturer','Write 5 Instagram captions for my birthday','Write a cover letter for a job'],
+  sys:BASEID+"You are an expert writing assistant. Help write CVs and resumes, cover letters, emails, formal letters, speeches, captions, WhatsApp and social media messages, and essays. If key details are missing, ask at most two short questions; otherwise write a complete draft straight away, using [square brackets] for anything the user must fill in. Give the finished text clearly so it is easy to copy, then offer one or two quick tweaks such as shorter, more formal or friendlier. Use plain Markdown. Never use tables or LaTeX."},
+ code:{label:'Coding help',ph:'Describe the code you need, or paste an error',title:'Coding help',sub:'Write, fix and understand code.',chips:['Explain what a function is','Build a simple HTML calculator','Write a Python program to check prime numbers','Fix this error: (paste your code)'],
+  sys:BASEID+"You are a friendly coding mentor. Write complete, working code in fenced code blocks with the language name. When fixing code, say what was wrong in one or two lines, then give the corrected code. Explain simply for beginners and mention how to run it, keeping in mind the user may be on a phone. Ask which language only if it is unclear. Use plain Markdown. Never use tables or LaTeX."},
+ trans:{label:'Translator',ph:'Type something to translate, or ask me to teach you',title:'Translator and languages',sub:'Translate and learn English, French, Yoruba, Igbo, Hausa, Pidgin and more.',chips:['Translate to French: Good morning, how are you?','How do I say thank you in Yoruba?','Teach me 10 Igbo greetings','Translate this to Pidgin: (paste text)'],
+  sys:BASEID+"You are a translator and language tutor. When asked to translate, give the translation first, then a short pronunciation guide when helpful and one brief note on tone or usage. You can work with English, French, Yoruba, Igbo, Hausa, Nigerian Pidgin and many other languages; be honest when unsure of a word or dialect. When asked to teach, give small lessons, then a short practice quiz. Use plain Markdown. Never use tables or LaTeX."},
+ friend:{label:'Friend chat',ph:'Say something...',title:'',sub:'',chips:['Hey, how are you doing today?','Tell me something funny','I had a long day, talk to me','Let us play 20 questions']}
+};
+const cfg=(k,d)=>S.settings[k]==null?d:S.settings[k];
+const friendName=()=>(String(cfg('friend','Nova')).trim()||'Nova').slice(0,24);
+function sysFor(mode){
+  if(mode==='friend')return BASEID.replace("You are StudentHub's AI assistant, created by Wisdom of WisdomArk.",'You are '+friendName()+", a friendly AI companion inside StudentHub, created by Wisdom of WisdomArk.")+"Chat like a close, kind friend: casual and natural, replies of one to three sentences unless asked for more, react to what they say, and sometimes ask a light follow-up. Your style is "+(FSTYLE[cfg('fstyle','warm')]||FSTYLE.warm)+". Use plain spoken sentences only: no lists, no headings, no markdown and no emojis unless the user uses them, because replies may be read aloud. You are an AI and never pretend to be human or to have real-world experiences; say so kindly if asked. Be honest, supportive and safe. If someone seems to be in serious distress or danger, respond with care and encourage them to talk to someone they trust or to local emergency services.";
+  return (MODES[mode]&&MODES[mode].sys)||SYS;
+}
+let NEWMODE='study';
+const curMode=()=>{const c=curChat();return c?(c.mode||'study'):NEWMODE};
+const autoSpeak=m=>{const v=S.settings.speak;return v==null?m==='friend':!!v};
+function modeTag(){
+  const m=curMode();if(m==='study')return '';
+  return `<div class="mtag"><span>${m==='friend'?esc(friendName()):esc(MODES[m].label)}</span>${m==='friend'?`<button class="chip" data-a="vtoggle">Voice ${autoSpeak('friend')?'on':'off'}</button>`:''}</div>`;
+}
+function modeHero(m){
+  const d=MODES[m];
+  if(m==='friend')return `<div class="hero"><div class="star">✦</div><h1>Hi, I'm ${esc(friendName())}</h1><p class="sub" style="margin:0 0 18px">Just talk to me. Tap the microphone to speak, and I will answer out loud.</p><div class="chips">${d.chips.map(t=>`<button class="chip" data-a="chip" data-t="${esc(t)}">${esc(t)}</button>`).join('')}</div></div>`;
+  return `<div class="hero"><div class="star">✦</div><h1>${esc(d.title)}</h1><p class="sub" style="margin:0 0 18px">${esc(d.sub)}</p><div class="chips">${d.chips.map(t=>`<button class="chip" data-a="chip" data-t="${esc(t)}">${esc(t)}</button>`).join('')}</div></div>`;
+}
+function vTools(){
+  const cards=[['study','Study assistant','Explain topics, solve problems and draw diagrams.'],['write','Writing and emails','CVs, cover letters, emails, captions and speeches.'],['code','Coding help','Write, fix and understand code in any language.'],['trans','Translator and languages','Translate and learn English, French, Yoruba, Igbo, Hausa and Pidgin.'],['friend',friendName()+', your AI friend','Casual chat with a voice you can customise in Settings.']];
+  return `<div class="wrap"><h1>AI tools</h1><p class="sub">Pick what you want help with.</p><div class="tg">${cards.map(c=>`<button class="tc" data-a="mode" data-v="${c[0]}"><b>${esc(c[1])}</b><small>${esc(c[2])}</small></button>`).join('')}</div></div>`;
+}
+/* ---------- Voice: read aloud and speak ---------- */
+const synth=window.speechSynthesis||null;
+let VOICES=[];
+function loadVoices(){if(!synth)return;VOICES=(synth.getVoices()||[]).slice();if(view==='settings'&&!document.activeElement.matches('input,select'))render()}
+if(synth){VOICES=synth.getVoices()||[];if(synth.addEventListener)synth.addEventListener('voiceschanged',loadVoices)}
+const plainTxt=t=>String(t).replace(/```[\s\S]*?```/g,' ').replace(/\[([^\]]*)\]\([^)]*\)/g,'$1').replace(/[*_#>`~|]/g,'').replace(/^\s*[-•]\s+/gm,'').replace(/\s+/g,' ').trim();
+function speak(t){
+  if(!synth)return false;
+  synth.cancel();
+  const text=plainTxt(t).slice(0,2500);if(!text)return false;
+  const sents=text.match(/[^.!?]+[.!?]*/g)||[text],chunks=[];let cur='';
+  sents.forEach(x=>{if((cur+x).length>180&&cur){chunks.push(cur);cur=x}else cur+=x});if(cur.trim())chunks.push(cur);
+  const v=VOICES.find(x=>x.name===cfg('voiceName',''));
+  chunks.forEach(p=>{const u=new SpeechSynthesisUtterance(p.trim());if(v){u.voice=v;u.lang=v.lang}u.rate=+cfg('rate',1)||1;u.pitch=+cfg('pitch',1)||1;synth.speak(u)});
+  return true;
+}
+const stopSpeak=()=>{if(synth)synth.cancel()};
+const SRC=window.SpeechRecognition||window.webkitSpeechRecognition;
+let REC=null,listening=false;
+function micUI(){const b=$('#cmic');if(b)b.classList.toggle('on',listening)}
+function toggleMic(){
+  if(!SRC){toast('Voice input is not supported in this browser. Try Chrome.',4500);return}
+  const ci=$('#ci');if(!ci)return;
+  if(listening&&REC){REC.stop();return}
+  stopSpeak();
+  REC=new SRC();REC.lang=cfg('micLang','en-US');REC.interimResults=true;REC.continuous=false;
+  REC.onstart=()=>{listening=true;micUI()};
+  REC.onresult=e=>{let t='';for(let i=0;i<e.results.length;i++)t+=e.results[i][0].transcript;ci.value=t;ci.dispatchEvent(new Event('input'))};
+  REC.onerror=e=>{listening=false;micUI();if(e.error==='not-allowed'||e.error==='service-not-allowed')toast('Microphone is blocked. Allow it in your browser settings.',5000)};
+  REC.onend=()=>{listening=false;micUI();const t=ci.value.trim();if(t&&curMode()==='friend'&&!busy){ci.value='';ci.dispatchEvent(new Event('input'));send(t)}};
+  try{REC.start()}catch(_){}
+}
 function heroH(){
+  if(curMode()!=='study')return modeHero(curMode());
   const nc=nextClass(),ds=dueSoon(),tm=minsOn(dkey());
   const n=first();
   return `<div class="hero"><div class="star">✦</div><h1>${greet()}${n?', '+esc(n):''}</h1>
@@ -604,16 +707,16 @@ function heroH(){
 }
 function msgH(m,i){
   if(m.r==='user'){const im=m.img?(IM.get(m)?`<img src="${IM.get(m).th}" alt="Photo">`:'<small class="mut">[Photo]</small><br>'):'';return `<div class="m u"><div class="bub">${im}${esc(m.t)}</div></div>`}
-  return `<div class="m a"><span class="av">✦</span><div class="body"><div class="prose">${md(m.t)}</div><div class="macts"><button data-a="copy" data-i="${i}">Copy</button><button data-a="tonote" data-i="${i}">Save as note</button></div></div></div>`;
+  return `<div class="m a"><span class="av">✦</span><div class="body"><div class="prose">${md(m.t)}</div><div class="macts"><button data-a="listen" data-i="${i}">Listen</button><button data-a="copy" data-i="${i}">Copy</button><button data-a="tonote" data-i="${i}">Save as note</button></div></div></div>`;
 }
 const LIVE='<div class="m a" id="live"><span class="av">✦</span><div class="body"><div class="prose"><span class="dots"><i></i><i></i><i></i></span></div></div></div>';
 function vChat(){
-  return `<div class="chat"><div class="msgs" id="msgs"><div class="mi" id="mi"></div></div><div class="cwrap"><div class="cprev" id="cprev"></div><form class="composer" id="cf"><textarea id="ci" rows="1" placeholder="Ask anything about your studies" aria-label="Message"></textarea><input type="file" id="cfile" accept="image/*" hidden><button class="ib" id="cat" type="button" aria-label="Attach photo">${ico('img',22)}</button><button class="send" id="cs" type="submit" aria-label="Send">${ico('send',20)}</button></form><p class="fine">AI can make mistakes. Check important answers.</p></div></div>`;
+  return `<div class="chat"><div class="msgs" id="msgs"><div class="mi" id="mi"></div></div><div class="cwrap"><div class="cprev" id="cprev"></div><form class="composer" id="cf"><textarea id="ci" rows="1" placeholder="Ask anything about your studies" aria-label="Message"></textarea><input type="file" id="cfile" accept="image/*" hidden><button class="ib" id="cmic" type="button" aria-label="Speak">${ico('mic',22)}</button><button class="ib" id="cat" type="button" aria-label="Attach photo">${ico('img',22)}</button><button class="send" id="cs" type="submit" aria-label="Send">${ico('send',20)}</button></form><p class="fine">AI can make mistakes. Check important answers.</p></div></div>`;
 }
 function paintMsgs(live){
   const mi=$('#mi');if(!mi)return;
   const c=curChat();
-  mi.innerHTML=(!c||!c.msgs.length)&&!live?heroH():c.msgs.map(msgH).join('')+(live?LIVE:'');
+  mi.innerHTML=modeTag()+((!c||!c.msgs.length)&&!live?heroH():c.msgs.map(msgH).join('')+(live?LIVE:''));
   const box=$('#msgs');box.scrollTop=box.scrollHeight;
 }
 function setSendBtn(){const b=$('#cs');if(b)b.innerHTML=ico(busy?'stop':'send',20)}
@@ -624,6 +727,8 @@ function mChat(){
   ci.addEventListener('input',fit);
   ci.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!matchMedia('(pointer:coarse)').matches){e.preventDefault();cf.requestSubmit()}});
   const cfile=$('#cfile'),cat=$('#cat');
+  ci.placeholder=(MODES[curMode()]||MODES.study).ph;
+  $('#cmic').addEventListener('click',toggleMic);
   paintPrev();
   cat.addEventListener('click',()=>cfile.click());
   cfile.addEventListener('change',async()=>{const f=cfile.files&&cfile.files[0];cfile.value='';if(!f)return;try{PEND=await prepImg(f);paintPrev()}catch(_){toast('Could not read that image.')}});
@@ -636,14 +741,14 @@ function paintPrev(){const p=$('#cprev');if(!p)return;if(PEND){p.className='cpre
 async function send(text){
   text=String(text||'').trim();if((!text&&!PEND)||busy)return;if(!text)text='Please help me with this photo.';const pic=PEND;PEND=null;paintPrev();
   let c=curChat();
-  if(!c){c={id:uid(),title:text.slice(0,48),ts:Date.now(),msgs:[]};S.chats.unshift(c);CH=c.id}
+  if(!c){c={id:uid(),title:text.slice(0,48),ts:Date.now(),msgs:[],mode:NEWMODE};S.chats.unshift(c);CH=c.id}
   const um={r:'user',t:text};if(pic){um.img=1;IM.set(um,pic)}c.msgs.push(um);c.ts=Date.now();save();
   if(view!=='chat'){view='chat';location.hash='#chat'}
   busy=true;ctl=new AbortController();
   if(!$('#mi'))render();
   paintMsgs(true);setSendBtn();renderSide();
   const live=t=>{const p=$('#live .prose');if(p){p.innerHTML=md(t);const b=$('#msgs');if(b)b.scrollTop=b.scrollHeight}};
-  try{c.msgs.push({r:'ai',t:await askAI(c.msgs,live,ctl.signal)})}
+  try{const ans=await askAI(c.msgs,live,ctl.signal,sysFor(c.mode||'study'));c.msgs.push({r:'ai',t:ans});if(autoSpeak(c.mode||'study'))speak(ans)}
   catch(e){if(!(e&&(e.name==='AbortError'||e.code==='cancelled')))c.msgs.push({r:'ai',t:errText(e),err:true})}
   busy=false;ctl=null;save();
   if(view==='chat'&&CH===c.id){paintMsgs(false);setSendBtn()}
@@ -1029,10 +1134,21 @@ function vSettings(){
    <div class="set"><div class="l"><b>Your name</b><small>Used in greetings.</small></div><input type="text" id="sname" value="${esc(S.name)}" placeholder="${esc((user&&user.name)||'Your name')}" maxlength="40" style="max-width:220px"></div></div>
   <div class="card" style="margin-bottom:16px"><h2>AI assistant</h2>
    <div class="set"><div class="l"><b>Provider</b><small>Auto picks the best available option.</small></div><select id="sprov" style="max-width:200px"><option value="auto" ${s.provider==='auto'?'selected':''}>Auto</option><option value="gemini" ${s.provider==='gemini'?'selected':''}>Gemini</option></select></div>
-   <div class="set"><div class="l"><b>Gemini API key</b><small>Free at aistudio.google.com. Stored on this device only.</small></div><input type="password" id="skey" value="${esc(s.geminiKey)}" placeholder="Paste key" autocomplete="off" style="max-width:260px"></div>
+   <div class="set"><div class="l"><b>Gemini API key</b><small>Optional. Signed-in users can use the AI without a key. Free keys at aistudio.google.com are stored on this device only.</small></div><input type="password" id="skey" value="${esc(s.geminiKey)}" placeholder="Paste key" autocomplete="off" style="max-width:260px"></div>
    <div class="set"><div class="l"><b>Gemini model</b><small>Change this if Google renames the model.</small></div><input type="text" id="smod" value="${esc(s.geminiModel)}" style="max-width:260px"></div></div>
+  <div class="card" style="margin-bottom:16px"><h2>Voice and friend</h2>
+   <div class="set"><div class="l"><b>Read replies aloud</b><small>Friend chat reads aloud by default. This applies to every mode when set.</small></div><select id="svspeak" style="max-width:160px"><option value="off" ${S.settings.speak===false?'selected':''}>Off</option><option value="on" ${S.settings.speak===true?'selected':''}>On</option>${S.settings.speak==null?'<option value="" selected>Friend chat only</option>':''}</select></div>
+   <div class="set"><div class="l"><b>Voice</b><small>${synth?'Voices depend on your phone and browser.':'Not supported in this browser.'}</small></div><select id="svoice" style="max-width:220px"><option value="">Default</option>${VOICES.slice().sort((a,b)=>a.lang.localeCompare(b.lang)||a.name.localeCompare(b.name)).map(v=>`<option value="${esc(v.name)}" ${v.name===s.voiceName?'selected':''}>${esc(v.name)} (${esc(v.lang)})</option>`).join('')}</select></div>
+   <div class="set"><div class="l"><b>Speed</b></div><input type="range" id="srate" min="0.7" max="1.4" step="0.05" value="${+cfg('rate',1)}" style="max-width:200px"></div>
+   <div class="set"><div class="l"><b>Pitch</b><small>Lower is deeper, higher is lighter.</small></div><input type="range" id="spitch" min="0.6" max="1.6" step="0.05" value="${+cfg('pitch',1)}" style="max-width:200px"></div>
+   <div class="set"><div class="l"><b>Test the voice</b></div><button class="btn" data-a="vtest">Play</button></div>
+   <div class="set"><div class="l"><b>When I speak</b><small>Language the microphone listens for.</small></div><select id="smic" style="max-width:200px">${[['en-NG','English (Nigeria)'],['en-US','English (US)'],['en-GB','English (UK)'],['fr-FR','French']].map(l=>`<option value="${l[0]}" ${cfg('micLang','en-US')===l[0]?'selected':''}>${l[1]}</option>`).join('')}</select></div>
+   <div class="set"><div class="l"><b>Friend name</b><small>What your AI friend is called.</small></div><input type="text" id="sfname" value="${esc(friendName())}" maxlength="24" style="max-width:200px"></div>
+   <div class="set"><div class="l"><b>Friend style</b></div><select id="sfstyle" style="max-width:200px">${[['warm','Warm and gentle'],['playful','Playful and witty'],['calm','Calm and soothing'],['hype','Upbeat and hype']].map(l=>`<option value="${l[0]}" ${cfg('fstyle','warm')===l[0]?'selected':''}>${l[1]}</option>`).join('')}</select></div></div>
   <div class="card" style="margin-bottom:16px"><h2>Study timer</h2><div class="fg"><label class="f">Focus (minutes)<input type="number" id="sfoc" min="1" max="180" value="${s.focus}"></label><label class="f">Break (minutes)<input type="number" id="sbrk" min="1" max="60" value="${s.brk}"></label></div></div>
   ${isAdmin()?`<div class="card" style="margin-bottom:16px"><h2>Admin</h2><div class="set"><div class="l"><b>Admin panel</b><small>Add questions and send announcements to all users.</small></div><button class="btn pri" data-a="go" data-v="admin">Open</button></div></div>`:''}
+  <div class="card" style="margin-bottom:16px"><h2>Notifications</h2>
+   <div class="set"><div class="l"><b>Announcements</b><small>${('Notification' in window&&Notification.permission==='granted'&&ls.get('sh2.push'))?'On. You will get announcements even when the app is closed.':'Get announcements even when the app is closed.'}</small></div>${('Notification' in window&&Notification.permission==='granted'&&ls.get('sh2.push'))?'<span class="mut">On</span>':'<button class="btn pri" data-a="pushon">Turn on</button>'}</div></div>
   <div class="card"><h2>Your data</h2>
    ${installEvt?`<div class="set"><div class="l"><b>Install StudentHub</b><small>Add it to your home screen as an app.</small></div><button class="btn pri" data-a="install">Install app</button></div>`:''}
    <div class="set"><div class="l"><b>Backup</b><small>Download everything as a file, or restore one.</small></div><div class="row"><button class="btn" data-a="export">Download</button><button class="btn" data-a="import">Restore</button><input type="file" id="ifile" accept=".json,application/json" hidden></div></div>
@@ -1047,6 +1163,13 @@ document.addEventListener('change',e=>{
   else if(t.id==='smod'){s.geminiModel=t.value.trim()||'gemini-flash-latest';save()}
   else if(t.id==='sfoc'){s.focus=Math.min(180,Math.max(1,+t.value||25));save();if(!TM.run&&TM.mode==='focus')TM.rem=tmTotal()}
   else if(t.id==='sbrk'){s.brk=Math.min(60,Math.max(1,+t.value||5));save();if(!TM.run&&TM.mode==='brk')TM.rem=tmTotal()}
+  else if(t.id==='svspeak'){s.speak=t.value==='on';save();if(!s.speak)stopSpeak()}
+  else if(t.id==='svoice'){s.voiceName=t.value;save();A.vtest()}
+  else if(t.id==='srate'){s.rate=+t.value||1;save()}
+  else if(t.id==='spitch'){s.pitch=+t.value||1;save()}
+  else if(t.id==='smic'){s.micLang=t.value;save()}
+  else if(t.id==='sfname'){s.friend=(t.value.trim()||'Nova').slice(0,24);save()}
+  else if(t.id==='sfstyle'){s.fstyle=t.value;save()}
   else if(t.id==='ifile'){
     const f=t.files[0];t.value='';if(!f)return;
     const fr=new FileReader();fr.onload=async()=>{try{const o=JSON.parse(fr.result);if(o.app!=='StudentHub'||!o.data)throw 0;if(!(await ask('Restoring replaces what is in StudentHub now. Continue?','Restore')))return;S=norm(o.data);save();render();toast('Backup restored')}catch(_){toast('That is not a StudentHub backup file.')}};fr.readAsText(f);
@@ -1062,7 +1185,7 @@ const A={
  logout:async()=>{if(await ask('Sign out of StudentHub on this device?','Sign out'))logout()},
  go:el=>go(el.dataset.v),
  drawer:()=>openDrawer(),
- newchat:()=>{CH=null;if(view==='chat'&&!busy){render()}else go('chat')},
+ newchat:()=>{NEWMODE=curMode();CH=null;if(view==='chat'&&!busy){render()}else go('chat')},
  openchat:(el,e)=>{if(e.target.closest('[data-a=delchat]'))return;CH=el.dataset.id;go('chat')},
  delchat:async el=>{if(await ask('Delete this chat?')){S.chats=S.chats.filter(c=>c.id!==el.dataset.id);if(CH===el.dataset.id)CH=null;save();render()}},
  chip:el=>{const ci=$('#ci');if(ci){ci.value=el.dataset.t;ci.focus();ci.dispatchEvent(new Event('input'))}},
@@ -1088,10 +1211,21 @@ const A={
  qquit:async()=>{if(await ask('Leave this quiz? Your progress will be lost.','Leave')){QZ.st='setup';render()}},
  qagain:()=>QZ.ai?qGen():qStart(),
  qgen:()=>qGen(),
+ pushon:()=>enablePush(false),
+ mode:el=>{NEWMODE=el.dataset.v;CH=null;stopSpeak();go('chat')},
+ listen:el=>{const c=curChat();const m=c&&c.msgs[+el.dataset.i];if(!m)return;if(synth&&synth.speaking){stopSpeak();return}if(!speak(m.t))toast('Reading aloud is not supported in this browser.')},
+ vtoggle:()=>{S.settings.speak=!autoSpeak('friend');save();if(!S.settings.speak)stopSpeak();paintMsgs(busy)},
+ vtest:()=>{if(!speak('Hi, I am '+friendName()+'. This is how I sound.'))toast('Reading aloud is not supported in this browser.')},
  annx:()=>{if(ANN)ls.set('sh2.annx',String(ANN.ts));paintAnn()},
  adx:el=>{const k=el.dataset.v;ADM.x[k]=!ADM.x[k];el.classList.toggle('on',!!ADM.x[k])},
  adann:async()=>{const t=($('#aann').value||'').trim();if(!t){toast('Write a message first.');return}
-  await adminWrite(async()=>{const d={text:t,on:true,ts:Date.now()};await fb.fs.setDoc(fb.fs.doc(fb.db,'config','announcement'),d);ANN={text:t,ts:d.ts};ls.set('sh2.ann',JSON.stringify(ANN));ls.del('sh2.annx');toast('Announcement published.');render()})},
+  await adminWrite(async()=>{const d={text:t,on:true,ts:Date.now()};await fb.fs.setDoc(fb.fs.doc(fb.db,'config','announcement'),d);ANN={text:t,ts:d.ts};ls.set('sh2.ann',JSON.stringify(ANN));ls.del('sh2.annx');
+   let extra='';
+   if($('#apush')&&$('#apush').checked){
+    if(!proxyOK())extra=' Saved. To send notifications, open the app from your Netlify link.';
+    else try{const tk=await fb.auth.currentUser.getIdToken();const r=await fetch(API+'announce',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tk},body:JSON.stringify({text:t})});const j=await r.json().catch(()=>({}));extra=r.ok?' Notification sent to '+(j.sent||0)+' devices.':' Saved, but the notification could not be sent.'}catch(_){extra=' Saved, but the notification could not be sent.'}
+   }
+   toast('Announcement published.'+extra,6000);render()})},
  rmann:async()=>{await adminWrite(async()=>{await fb.fs.setDoc(fb.fs.doc(fb.db,'config','announcement'),{text:'',on:false,ts:Date.now()});ANN=null;ls.set('sh2.ann','null');toast('Announcement removed.');render()})},
  adq:async()=>{
   const x=Object.keys(ADM.x).filter(k=>ADM.x[k]).join(''),sub=$('#asub').value.trim(),q=$('#aq').value.trim(),o=[0,1,2,3].map(i=>$('#ao'+i).value.trim()),a=+$('#aok').value,e=$('#ae').value.trim();
