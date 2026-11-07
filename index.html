@@ -1223,7 +1223,7 @@ const A={
    let extra='';
    if($('#apush')&&$('#apush').checked){
     if(!proxyOK())extra=' Saved. To send notifications, open the app from your Netlify link.';
-    else try{const tk=await fb.auth.currentUser.getIdToken();const r=await fetch(API+'announce',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tk},body:JSON.stringify({text:t})});const j=await r.json().catch(()=>({}));extra=r.ok?' Notification sent to '+(j.sent||0)+' devices.':' Saved, but the notification could not be sent.'}catch(_){extra=' Saved, but the notification could not be sent.'}
+    else try{const tk=await fb.auth.currentUser.getIdToken();const r=await fetch(API+'announce',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tk},body:JSON.stringify({text:t})});const j=await r.json().catch(()=>({}));extra=r.ok?' Notification sent to '+(j.sent||0)+' devices.':' Saved, but the notification failed: '+(j.error||('error '+r.status))+'.'}catch(e){extra=' Saved, but the notification failed: '+(e&&e.message?e.message:'network error')+'.'}
    }
    toast('Announcement published.'+extra,6000);render()})},
  rmann:async()=>{await adminWrite(async()=>{await fb.fs.setDoc(fb.fs.doc(fb.db,'config','announcement'),{text:'',on:false,ts:Date.now()});ANN=null;ls.set('sh2.ann','null');toast('Announcement removed.');render()})},
